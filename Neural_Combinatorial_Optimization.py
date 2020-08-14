@@ -135,6 +135,7 @@ class GraphEmbedding(nn.Module):
         embedded = torch.cat(embedded, 1)
         return embedded
 
+class PointerNet(nn.Module):
     def __init__(self, 
             embedding_size,
             hidden_size,
