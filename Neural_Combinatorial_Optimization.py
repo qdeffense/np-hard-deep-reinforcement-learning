@@ -4,7 +4,6 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.autograd as autograd
 import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
@@ -14,7 +13,6 @@ USE_CUDA = True
 from IPython.display import clear_output
 from tqdm import tqdm
 import matplotlib.pyplot as plt
-%matplotlib inline
 
 
 class TSPDataset(Dataset):
@@ -215,7 +213,7 @@ class PointerNet(nn.Module):
             idxs = probs.multinomial().squeeze(1)
             for old_idxs in prev_idxs:
                 if old_idxs.eq(idxs).data.any():
-                    print seq_len
+                    print(seq_len)
                     print(' RESAMPLE!')
                     idxs = probs.multinomial().squeeze(1)
                     break
@@ -258,8 +256,8 @@ class CombinatorialRL(nn.Module):
             inputs: [batch_size, input_size, seq_len]
         """
         batch_size = inputs.size(0)
-        input_size = inputs.size(1)
-        seq_len    = inputs.size(2)
+        #input_size = inputs.size(1)
+        #seq_len    = inputs.size(2)
         
         probs, action_idxs = self.actor(inputs)
        
@@ -388,7 +386,7 @@ class TrainModel:
                         self.val_tour.append(R.mean().data[0])
 
             if self.threshold and self.train_tour[-1] < self.threshold:
-                print "EARLY STOPPAGE!"
+                print("EARLY STOPPAGE!")
                 break
                 
             self.epochs += 1
