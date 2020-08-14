@@ -17,9 +17,10 @@ import matplotlib.pyplot as plt
 
 class TSPDataset(Dataset):
     
-    def __init__(self, num_nodes, num_samples, random_seed=111):
+    def __init__(self, num_nodes, num_samples, random_seed=-1):
         super(TSPDataset, self).__init__()
-        torch.manual_seed(random_seed)
+        if random_seed != -1:
+            torch.manual_seed(random_seed)
 
         self.data_set = []
         for l in tqdm(range(num_samples)):
