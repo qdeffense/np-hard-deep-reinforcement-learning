@@ -169,7 +169,7 @@ class PointerNet(nn.Module):
     def forward(self, inputs):
         """
         Args: 
-            inputs: [batch_size x 1 x seq_len]
+            inputs: [batch_size x 2 x seq_len]
         """
         batch_size = inputs.size(0)
         seq_len    = inputs.size(2)
@@ -205,13 +205,77 @@ class PointerNet(nn.Module):
             logits, mask = self.apply_mask_to_logits(logits, mask, idxs)
             probs = F.softmax(logits, dim=1)
  
-            idxs = probs.multinomial().squeeze(1)
+            idxs = probs.multinomial(1).squeeze(1)
             for old_idxs in prev_idxs:
                 if old_idxs.eq(idxs).data.any():
                     print(seq_len)
                     print(' RESAMPLE!')
                     idxs = probs.multinomial(1).squeeze(1)
                     break
+            decoder_input = embedded[[i for i in range(batch_size)], idxs.data, :] 
+            
+            prev_probs.append(probs)
+            prev_idxs.append(idxs)
+            
+        return prev_probs, prev_idxs
+    
+    def greedy(self, inputs):
+        """
+        Args: 
+            inputs: [batch_size x 2 x seq_len]
+        """
+        batch_size = inputs.size(0)
+        seq_len    = inputs.size(2)
+        assert seq_len == self.seq_len
+        
+        embedded = self.embedding(inputs) #embedded : [batch_size, seq_len, embedding_size]
+        encoder_outputs, (hidden, context) = self.encoder(embedded)
+        
+        
+        prev_probs = []
+        prev_idxs = []
+        mask = torch.zeros(batch_size, seq_len).bool()
+        if self.use_cuda:
+            mask = mask.cuda()
+            
+        idxs = None
+       
+        decoder_input = self.decoder_start_input.unsqueeze(0).repeat(batch_size, 1)
+        
+        for i in range(seq_len):
+            
+            
+            _, (hidden, context) = self.decoder(decoder_input.unsqueeze(1), (hidden, context))
+            
+            query = hidden.squeeze(0)
+            for i in range(self.n_glimpses):
+                ref, logits = self.glimpse(query, encoder_outputs)
+                #logits = self.C*torch.tanh(logits)
+                logits, mask = self.apply_mask_to_logits(logits, mask, idxs)
+                query = torch.bmm(ref, F.softmax(logits, dim=1).unsqueeze(2)).squeeze(2) 
+                
+                
+            _,logits = self.pointer(query, encoder_outputs)
+            
+            if self.use_tanh:
+                logits = self.C*torch.tanh(logits)
+            else:
+                print(logits)
+                logits = logits/2.0
+                print
+
+            logits, mask = self.apply_mask_to_logits(logits, mask, idxs)
+            probs = F.softmax(logits, dim=1)
+            #idxs = probs.multinomial(1).squeeze(1)
+            idxs = probs.argmax(dim=1)
+
+            for old_idxs in prev_idxs:
+                if old_idxs.eq(idxs).data.any():
+                    print(seq_len)
+                    print(' RESAMPLE!')
+                    idxs = probs.multinomial(1).squeeze(1)
+                    break
+            
             decoder_input = embedded[[i for i in range(batch_size)], idxs.data, :] 
             
             prev_probs.append(probs)
@@ -270,6 +334,29 @@ class CombinatorialRL(nn.Module):
         
         return R, action_probs, actions, action_idxs
 
+    def greedy(self, inputs):
+        """
+        Args:
+            inputs: [batch_size, input_size, seq_len]
+        """
+        batch_size = inputs.size(0)
+        
+        probs, action_idxs = self.actor.greedy(inputs) 
+
+        actions = []
+        
+        inputs = inputs.transpose(1, 2)
+        for action_id in action_idxs:
+            actions.append(inputs[[x for x in range(batch_size)], action_id.data, :])
+
+            
+        action_probs = []    
+        for prob, action_id in zip(probs, action_idxs):
+            action_probs.append(prob[[x for x in range(batch_size)], action_id.data])
+
+        R = self.reward(actions, self.use_cuda)
+        
+        return R, action_probs, actions, action_idxs
 
 class TrainModel:
     def __init__(self, model, train_dataset, val_dataset, batch_size=128, threshold=None, max_grad_norm=2.):
