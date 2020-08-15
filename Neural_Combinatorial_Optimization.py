@@ -35,14 +35,6 @@ class TSPDataset(Dataset):
     def __getitem__(self, idx):
         return self.data_set[idx]
     
-train_size = 1000000
-val_size = 10000
-
-train_20_dataset = TSPDataset(20, train_size)
-val_20_dataset   = TSPDataset(20, val_size)
-
-train_50_dataset = TSPDataset(50, train_size)
-val_50_dataset   = TSPDataset(50, val_size)
 
 def reward(sample_solution, USE_CUDA=False):
     """
@@ -276,41 +268,6 @@ class CombinatorialRL(nn.Module):
         
         return R, action_probs, actions, action_idxs
 
-embedding_size = 128
-hidden_size    = 128
-n_glimpses = 1
-tanh_exploration = 10
-use_tanh = True
-
-beta = 0.9
-max_grad_norm = 2.
-
-tsp_20_model = CombinatorialRL(
-        embedding_size,
-        hidden_size,
-        20,
-        n_glimpses, 
-        tanh_exploration,
-        use_tanh,
-        reward,
-        attention="Dot",
-        use_cuda=USE_CUDA)
-
-tsp_50_model = CombinatorialRL(
-        embedding_size,
-        hidden_size,
-        50,
-        n_glimpses, 
-        tanh_exploration,
-        use_tanh,
-        reward,
-        attention="Bahdanau",
-        use_cuda=USE_CUDA)
-
-if USE_CUDA:
-    tsp_20_model = tsp_20_model.cuda()
-    tsp_50_model = tsp_50_model.cuda()
-
 
 class TrainModel:
     def __init__(self, model, train_dataset, val_dataset, batch_size=128, threshold=None, max_grad_norm=2.):
@@ -404,6 +361,52 @@ class TrainModel:
         plt.plot(self.val_tour)
         plt.grid()
         plt.show()
+
+train_size = 1000000
+val_size = 10000
+embedding_size = 128
+hidden_size    = 128
+n_glimpses = 1
+tanh_exploration = 10
+use_tanh = True
+
+beta = 0.9
+max_grad_norm = 2.
+
+train_20_dataset = TSPDataset(20, train_size)
+val_20_dataset   = TSPDataset(20, val_size)
+
+train_50_dataset = TSPDataset(50, train_size)
+val_50_dataset   = TSPDataset(50, val_size)
+
+
+
+
+tsp_20_model = CombinatorialRL(
+        embedding_size,
+        hidden_size,
+        20,
+        n_glimpses, 
+        tanh_exploration,
+        use_tanh,
+        reward,
+        attention="Dot",
+        use_cuda=USE_CUDA)
+
+tsp_50_model = CombinatorialRL(
+        embedding_size,
+        hidden_size,
+        50,
+        n_glimpses, 
+        tanh_exploration,
+        use_tanh,
+        reward,
+        attention="Bahdanau",
+        use_cuda=USE_CUDA)
+
+if USE_CUDA:
+    tsp_20_model = tsp_20_model.cuda()
+    tsp_50_model = tsp_50_model.cuda()
 
 tsp_20_train = TrainModel(tsp_20_model, 
                         train_20_dataset, 
