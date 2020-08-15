@@ -1,5 +1,6 @@
 import math
 import numpy as np
+import pickle
 
 import torch
 import torch.nn as nn
@@ -550,7 +551,49 @@ class TrainModel:
         plt.show()
         plt.close('all')
 
-val_size = 10000
+class Sampling:
+    def __init__(self, model, dataset, batch_size=1024, num_workers=0):
+        self.model = model
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.dataset = dataset
+
+    def sample(self, nbr_candidates):
+        self.model.eval()
+        best_tours = []
+        best_rewards = []
+        for i in range(len(self.dataset)):
+            
+            best = []
+            best_reward = 10000000
+            
+            instance_set = []
+            for j in range(nbr_candidates):
+                instance_set.append(self.dataset[i])
+                
+            val_loader = DataLoader(instance_set, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+            
+            for batch_id, val_batch in enumerate(val_loader):
+                inputs = Variable(val_batch)
+                if USE_CUDA:
+                    inputs = inputs.cuda()
+                
+                R, probs, actions, actions_idxs = self.model(inputs)
+                if R.min() < best_reward:
+                    best_id = R.argmin()
+                    best_reward = R[best_id].item()
+                    best = []
+                    for city in actions_idxs:
+                        best.append(city[best_id].item())
+            
+            best_tours.append(best)
+            best_rewards.append(best_reward)
+    
+        return best_rewards, best_tours
+    
+# train a TSP20 model using 1 glimpse, tanh clipping with tanh = 10
+#####################################################################
+
 embedding_size = 128
 hidden_size    = 128
 seq_length = 20
@@ -559,16 +602,7 @@ tanh_exploration = 10
 use_tanh = True
 attention = "Bahdanau"
 
-beta = 0.9
-max_grad_norm = 2.
-
-val_20_dataset   = TSPDataset(20, val_size)
-
-
-
-
-
-tsp_20_model = CombinatorialRL(
+tsp_model = CombinatorialRL(
         embedding_size,
         hidden_size,
         seq_length,
@@ -579,11 +613,9 @@ tsp_20_model = CombinatorialRL(
         attention=attention,
         use_cuda=USE_CUDA)
 
-
 if USE_CUDA:
-    tsp_20_model = tsp_20_model.cuda()
-    
-    
+    tsp_model = tsp_model.cuda()
+
 critic = CriticNet(
         embedding_size,
         hidden_size,
@@ -595,19 +627,70 @@ critic = CriticNet(
         use_cuda=USE_CUDA,
         d=hidden_size)
 
-tsp_20_train = TrainModel(tsp_20_model,
-                          critic, 
-                        val_20_dataset)
+if USE_CUDA:
+    critic = critic.cuda()
 
-seeds = [1,2,3,4,5]
-tsp_20_train.train_and_validate(seeds,seq_length)
+val_size = 12800
+val_dataset   = TSPDataset(seq_length, val_size, random_seed=1478523690)
 
+batch_size = 128
+threshold = 1.00
+max_grad_norm = 1.
 
+tsp_20_train = TrainModel(tsp_model,
+                        critic, 
+                        val_dataset, 
+                        batch_size=batch_size,
+                        threshold=threshold,
+                        max_grad_norm=max_grad_norm)
 
+# number of epoch, each epoch is 5000 training steps
+nbr_epochs = 10
 
+# if the seeds are set to -1, there won't be any manual seeds
+# if it's another number, the seed will be set to this number
+seeds = []
+for i in range(nbr_epochs):
+    seeds.append(-1)
 
+tsp_20_train.train_and_validate(seeds, seq_length)
 
+# Test the trained model on the test instances with Greedy strategy
+###############################################
 
+test_file = open('test20',"rb")
+test_dataset = pickle.load(test_file)
+test_file.close()
 
+batch_size = 1
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=4)
 
+tsp_model.eval()
+
+test_tour_best = []
+
+for test_batch in test_loader:
+    inputs = Variable(test_batch)
+    if USE_CUDA: 
+        inputs = inputs.cuda()
+    
+    R, probs, actions, actions_idxs = tsp_model.greedy(inputs)
+    test_tour_best.append(R.mean().item())
+
+avg = sum(test_tour_best)/len(test_tour_best)
+
+print('average reward : %s' % (avg))
+
+# Test the trained model on the test instances with Sampling strategy
+#####################################################################
+
+batch_size = 1024
+nbr_candidates = 12800
+
+# initiate the sampling and run it
+samp = Sampling(tsp_model, test_dataset, batch_size=batch_size,num_workers=4)
+best_rewards, best_tours = samp.sample(nbr_candidates)
+
+avg = sum(best_rewards)/len(best_rewards)
+print('average reward : %s' % (avg))
 
