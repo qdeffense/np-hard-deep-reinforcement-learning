@@ -57,11 +57,9 @@ def reward(sample_solution, USE_CUDA=False):
 
 
 class Attention(nn.Module):
-    def __init__(self, hidden_size, use_tanh=False, C=10, name='Bahdanau', use_cuda=USE_CUDA):
+    def __init__(self, hidden_size, name='Bahdanau', use_cuda=USE_CUDA):
         super(Attention, self).__init__()
         
-        self.use_tanh = use_tanh
-        self.C = C
         self.name = name
         
         if name == 'Bahdanau':
@@ -100,10 +98,7 @@ class Attention(nn.Module):
         else:
             raise NotImplementedError
         
-        if self.use_tanh:
-            logits = self.C * F.tanh(logits)
-        else:
-            logits = logits  
+ 
         return ref, logits
 
 class GraphEmbedding(nn.Module):
@@ -150,8 +145,8 @@ class PointerNet(nn.Module):
         self.embedding = GraphEmbedding(2, embedding_size, use_cuda=use_cuda)
         self.encoder = nn.LSTM(embedding_size, hidden_size, batch_first=True)
         self.decoder = nn.LSTM(embedding_size, hidden_size, batch_first=True)
-        self.pointer = Attention(hidden_size, use_tanh=use_tanh, C=tanh_exploration, name=attention, use_cuda=use_cuda)
-        self.glimpse = Attention(hidden_size, use_tanh=False, name=attention, use_cuda=use_cuda)
+        self.pointer = Attention(hidden_size, name=attention, use_cuda=use_cuda)
+        self.glimpse = Attention(hidden_size, name=attention, use_cuda=use_cuda)
         
         self.decoder_start_input = nn.Parameter(torch.FloatTensor(embedding_size))
         self.decoder_start_input.data.uniform_(-(1. / math.sqrt(embedding_size)), 1. / math.sqrt(embedding_size))
@@ -201,7 +196,13 @@ class PointerNet(nn.Module):
                 query = torch.bmm(ref, F.softmax(logits, dim=1).unsqueeze(2)).squeeze(2) 
                 
                 
-            _, logits = self.pointer(query, encoder_outputs)
+            _,logits = self.pointer(query, encoder_outputs)
+            
+            if self.use_tanh:
+                logits = self.C*torch.tanh(logits)
+            else:
+                logits = logits/2.0
+
             logits, mask = self.apply_mask_to_logits(logits, mask, idxs)
             probs = F.softmax(logits, dim=1)
  
@@ -319,8 +320,10 @@ class CombinatorialRL(nn.Module):
         #seq_len    = inputs.size(2)
         
         probs, action_idxs = self.actor(inputs)
-       
+        #probs : [seq_len, batch_size, seq_len]
+        #action_idxs : [seq_len, batch_size]
         actions = []
+        
         inputs = inputs.transpose(1, 2)
         for action_id in action_idxs:
             actions.append(inputs[[x for x in range(batch_size)], action_id.data, :])
@@ -342,7 +345,8 @@ class CombinatorialRL(nn.Module):
         batch_size = inputs.size(0)
         
         probs, action_idxs = self.actor.greedy(inputs) 
-
+        #probs : [seq_len, batch_size, seq_len]
+        #action_idxs : [seq_len, batch_size]
         actions = []
         
         inputs = inputs.transpose(1, 2)
