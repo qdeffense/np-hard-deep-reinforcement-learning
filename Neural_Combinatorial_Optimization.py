@@ -12,6 +12,7 @@ from torch.utils.data import Dataset, DataLoader
 from IPython.display import clear_output
 from tqdm import tqdm
 import matplotlib.pyplot as plt
+from torch.optim.lr_scheduler import LambdaLR
 
 USE_CUDA = False
 
@@ -430,22 +431,18 @@ class CriticNet(nn.Module):
         return baseline_pred
 
 class TrainModel:
-    def __init__(self, model, critic, train_dataset, val_dataset, 
-                 batch_size=128, threshold=None, max_grad_norm=2.):
+    def __init__(self, model, critic, val_dataset, 
+                 batch_size=128, threshold=None, max_grad_norm=2., learningRate = 1e-3):
         self.model = model
         self.critic = critic
-
-        self.train_dataset = train_dataset
+        
         self.val_dataset   = val_dataset
         self.batch_size = batch_size
         self.threshold = threshold
         
-        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
         self.val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
-
-        self.actor_optim   = optim.Adam(model.actor.parameters(), lr=1e-4)
-        self.critic_optim = optim.Adam(critic.parameters(), lr=1e-4)
-
+        self.actor_optim   = optim.Adam(model.actor.parameters(), lr=learningRate)
+        self.critic_optim = optim.Adam(critic.parameters(), lr=learningRate)
         self.max_grad_norm = max_grad_norm
         
         self.train_tour = []
@@ -453,10 +450,16 @@ class TrainModel:
         
         self.epochs = 0
     
-    def train_and_validate(self, n_epochs):
-
-        for epoch in range(n_epochs):
-            for batch_id, sample_batch in enumerate(self.train_loader):
+    def train_and_validate(self, rand_seeds,seq_length):
+        lr_lambda = lambda epoch: 0.96 ** epoch
+        scheduler_actor = LambdaLR(self.actor_optim,lr_lambda=lr_lambda)
+        
+        for seed in rand_seeds:
+            train_dataset = TSPDataset(seq_length, 5000*self.batch_size,random_seed = seed)
+            train_loader = DataLoader(train_dataset, batch_size=self.batch_size, 
+                                      shuffle=True, num_workers=0)
+            
+            for batch_id, sample_batch in enumerate(train_loader):
                 self.model.train()
                 self.critic.train()
 
@@ -516,6 +519,19 @@ class TrainModel:
             if self.threshold and self.train_tour[-1] < self.threshold:
                 print("EARLY STOPPAGE!")
                 break
+            
+            self.plot(self.epochs)
+            
+            torch.save({
+                    'epoch' : self.epochs,
+                    'model_state_dict' : self.model.state_dict(),
+                    'optimizer_state_dict': self.actor_optim.state_dict(),
+                    'critic_state_dict' : self.critic.state_dict(),
+                    'critic_optim_state_dict': self.critic_optim.state_dict()
+                    }, 'model_' + str(self.epochs) + '.tar')
+            
+            
+            scheduler_actor.step()
                 
             self.epochs += 1
                 
@@ -530,12 +546,14 @@ class TrainModel:
         plt.title('val tour length: epoch %s reward %s' % (epoch, self.val_tour[-1] if len(self.val_tour) else 'collecting'))
         plt.plot(self.val_tour)
         plt.grid()
+        plt.savefig('plot' + str(epoch) + '.png')
         plt.show()
+        plt.close('all')
 
-train_size = 1000000
 val_size = 10000
 embedding_size = 128
 hidden_size    = 128
+seq_length = 20
 n_glimpses = 1
 tanh_exploration = 10
 use_tanh = True
@@ -544,7 +562,6 @@ attention = "Bahdanau"
 beta = 0.9
 max_grad_norm = 2.
 
-train_20_dataset = TSPDataset(20, train_size)
 val_20_dataset   = TSPDataset(20, val_size)
 
 
@@ -554,12 +571,12 @@ val_20_dataset   = TSPDataset(20, val_size)
 tsp_20_model = CombinatorialRL(
         embedding_size,
         hidden_size,
-        20,
+        seq_length,
         n_glimpses, 
         tanh_exploration,
         use_tanh,
         reward,
-        attention="Dot",
+        attention=attention,
         use_cuda=USE_CUDA)
 
 
@@ -570,7 +587,7 @@ if USE_CUDA:
 critic = CriticNet(
         embedding_size,
         hidden_size,
-        20,
+        seq_length,
         n_glimpses, 
         attention,
         C=tanh_exploration,
@@ -579,12 +596,11 @@ critic = CriticNet(
         d=hidden_size)
 
 tsp_20_train = TrainModel(tsp_20_model,
-                          critic,
-                        train_20_dataset, 
-                        val_20_dataset, 
-                        threshold=3.99)
+                          critic, 
+                        val_20_dataset)
 
-tsp_20_train.train_and_validate(5)
+seeds = [1,2,3,4,5]
+tsp_20_train.train_and_validate(seeds,seq_length)
 
 
 
