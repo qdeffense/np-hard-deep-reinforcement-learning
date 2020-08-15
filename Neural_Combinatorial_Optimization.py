@@ -8,12 +8,12 @@ import torch.nn.functional as F
 from torch.autograd import Variable
 from torch.utils.data import Dataset, DataLoader
 
-USE_CUDA = True
 
 from IPython.display import clear_output
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
+USE_CUDA = False
 
 class TSPDataset(Dataset):
     
@@ -430,17 +430,22 @@ class CriticNet(nn.Module):
         return baseline_pred
 
 class TrainModel:
-    def __init__(self, model, train_dataset, val_dataset, batch_size=128, threshold=None, max_grad_norm=2.):
+    def __init__(self, model, critic, train_dataset, val_dataset, 
+                 batch_size=128, threshold=None, max_grad_norm=2.):
         self.model = model
+        self.critic = critic
+
         self.train_dataset = train_dataset
         self.val_dataset   = val_dataset
         self.batch_size = batch_size
         self.threshold = threshold
         
-        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=1)
-        self.val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=1)
+        self.train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        self.val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
 
         self.actor_optim   = optim.Adam(model.actor.parameters(), lr=1e-4)
+        self.critic_optim = optim.Adam(critic.parameters(), lr=1e-4)
+
         self.max_grad_norm = max_grad_norm
         
         self.train_tour = []
@@ -449,26 +454,22 @@ class TrainModel:
         self.epochs = 0
     
     def train_and_validate(self, n_epochs):
-        critic_exp_mvg_avg = torch.zeros(1)
-        if USE_CUDA: 
-            critic_exp_mvg_avg = critic_exp_mvg_avg.cuda()
 
         for epoch in range(n_epochs):
             for batch_id, sample_batch in enumerate(self.train_loader):
                 self.model.train()
+                self.critic.train()
 
                 inputs = Variable(sample_batch)
-                inputs = inputs.cuda()
+                if USE_CUDA: 
+                    inputs = inputs.cuda()
 
                 R, probs, actions, actions_idxs = self.model(inputs)
-
-                if batch_id == 0:
-                    critic_exp_mvg_avg = R.mean()
-                else:
-                    critic_exp_mvg_avg = (critic_exp_mvg_avg * beta) + ((1. - beta) * R.mean())
+                baseline = self.critic(inputs)
 
 
-                advantage = R - critic_exp_mvg_avg
+
+                advantage = R - baseline
 
                 logprobs = 0
                 for prob in probs: 
@@ -478,30 +479,39 @@ class TrainModel:
 
                 reinforce = advantage * logprobs
                 actor_loss = reinforce.mean()
+                
+                square_diff = (baseline-R)**2
+                critic_loss = square_diff.mean()
 
                 self.actor_optim.zero_grad()
-                actor_loss.backward()
-                torch.nn.utils.clip_grad_norm(self.model.actor.parameters(),
+                actor_loss.backward(retain_graph=True)
+                torch.nn.utils.clip_grad_norm_(self.model.actor.parameters(),
                                     float(self.max_grad_norm), norm_type=2)
 
                 self.actor_optim.step()
 
-                critic_exp_mvg_avg = critic_exp_mvg_avg.detach()
+                self.critic_optim.zero_grad()
+                critic_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.critic.parameters(),
+                                    float(self.max_grad_norm), norm_type=2)
+                self.critic_optim.step()
+                
+                self.train_tour.append(R.mean().item())
 
-                self.train_tour.append(R.mean().data[0])
-
-                if batch_id % 10 == 0:
-                    self.plot(self.epochs)
-
-                if batch_id % 100 == 0:    
+                
+                if batch_id % 1000 == 0:    
 
                     self.model.eval()
                     for val_batch in self.val_loader:
                         inputs = Variable(val_batch)
-                        inputs = inputs.cuda()
+                        if USE_CUDA: 
+                            inputs = inputs.cuda()
 
                         R, probs, actions, actions_idxs = self.model(inputs)
-                        self.val_tour.append(R.mean().data[0])
+                        self.val_tour.append(R.mean().item())
+                
+                if batch_id % 50 == 0:
+                    self.plot(self.epochs)
 
             if self.threshold and self.train_tour[-1] < self.threshold:
                 print("EARLY STOPPAGE!")
@@ -529,6 +539,7 @@ hidden_size    = 128
 n_glimpses = 1
 tanh_exploration = 10
 use_tanh = True
+attention = "Bahdanau"
 
 beta = 0.9
 max_grad_norm = 2.
@@ -536,8 +547,6 @@ max_grad_norm = 2.
 train_20_dataset = TSPDataset(20, train_size)
 val_20_dataset   = TSPDataset(20, val_size)
 
-train_50_dataset = TSPDataset(50, train_size)
-val_50_dataset   = TSPDataset(50, val_size)
 
 
 
@@ -553,35 +562,30 @@ tsp_20_model = CombinatorialRL(
         attention="Dot",
         use_cuda=USE_CUDA)
 
-tsp_50_model = CombinatorialRL(
-        embedding_size,
-        hidden_size,
-        50,
-        n_glimpses, 
-        tanh_exploration,
-        use_tanh,
-        reward,
-        attention="Bahdanau",
-        use_cuda=USE_CUDA)
 
 if USE_CUDA:
     tsp_20_model = tsp_20_model.cuda()
-    tsp_50_model = tsp_50_model.cuda()
+    
+    
+critic = CriticNet(
+        embedding_size,
+        hidden_size,
+        20,
+        n_glimpses, 
+        attention,
+        C=tanh_exploration,
+        use_tanh=use_tanh,
+        use_cuda=USE_CUDA,
+        d=hidden_size)
 
-tsp_20_train = TrainModel(tsp_20_model, 
+tsp_20_train = TrainModel(tsp_20_model,
+                          critic,
                         train_20_dataset, 
                         val_20_dataset, 
                         threshold=3.99)
 
 tsp_20_train.train_and_validate(5)
 
-train_50_train = TrainModel(tsp_50_model, 
-                            train_50_dataset, 
-                            val_50_dataset, 
-                            threshold=6.4)
-
-
-train_50_train.train_and_validate(10)
 
 
 
