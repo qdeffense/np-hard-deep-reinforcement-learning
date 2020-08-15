@@ -15,7 +15,7 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import LambdaLR
 
-USE_CUDA = False
+USE_CUDA = True
 
 class TSPDataset(Dataset):
     
@@ -441,7 +441,7 @@ class TrainModel:
         self.batch_size = batch_size
         self.threshold = threshold
         
-        self.val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=0)
+        self.val_loader   = DataLoader(val_dataset, batch_size=batch_size, shuffle=True, num_workers=4)
         self.actor_optim   = optim.Adam(model.actor.parameters(), lr=learningRate)
         self.critic_optim = optim.Adam(critic.parameters(), lr=learningRate)
         self.max_grad_norm = max_grad_norm
@@ -458,7 +458,7 @@ class TrainModel:
         for seed in rand_seeds:
             train_dataset = TSPDataset(seq_length, 5000*self.batch_size,random_seed = seed)
             train_loader = DataLoader(train_dataset, batch_size=self.batch_size, 
-                                      shuffle=True, num_workers=0)
+                                      shuffle=True, num_workers=4)
             
             for batch_id, sample_batch in enumerate(train_loader):
                 self.model.train()
@@ -590,6 +590,103 @@ class Sampling:
             best_rewards.append(best_reward)
     
         return best_rewards, best_tours
+
+class Active_Search:
+    def __init__(self, model, dataset, checkpoint, batch_size=128, num_workers = 0, threshold=None, max_grad_norm=2.,learningRate = 1e-5):
+        self.model = model
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.threshold = threshold
+        self.learningRate = learningRate
+        self.dataset = dataset
+        self.checkpoint = checkpoint
+
+        self.actor_optim   = optim.Adam(model.actor.parameters(), lr=learningRate)
+        self.max_grad_norm = max_grad_norm
+            
+    
+    def act_search(self,k = 12800, alpha=0.99):
+        
+        bests = []
+        best_tours = []
+        cur_each = 1
+        
+        seq_length = len(self.dataset[0][0])
+
+        if(USE_CUDA):
+            device = torch.device("cuda")
+        else:
+            device = torch.device('cpu')
+
+        for each in self.dataset:
+
+            self.model.load_state_dict(self.checkpoint['model_state_dict'])
+            self.model.to(device)
+            self.model.train()
+            
+            instance = []
+            for i in range(k):
+                instance.append(each)
+                
+                rand_idx = torch.randperm(seq_length)
+                each[0] = each[0][rand_idx]
+                each[1] = each[1][rand_idx]
+            
+            baseline = torch.zeros(1)
+            
+            loader = DataLoader(instance, batch_size=self.batch_size, shuffle=False, num_workers=self.num_workers)
+            
+            best = 1000.*len(each[0])
+            best_tour = []
+            
+            for batch_id, sample_batch in enumerate(loader):
+                
+                self.model.train()
+                inputs = Variable(sample_batch)
+                if USE_CUDA: 
+                    inputs = inputs.cuda()
+                R, probs, actions, actions_idxs = self.model(inputs)
+
+                if R.min() < best:
+                    best_id = R.argmin()
+                    best = R[best_id].item()
+                    best_tour = []
+                    for city in actions_idxs:
+                        best_tour.append(city[best_id].item())
+
+
+                    
+                logprobs = 0
+                for prob in probs: 
+                    logprob = torch.log(prob)
+                    logprobs += logprob
+                logprobs[logprobs < -1000] = 0. 
+                
+                if batch_id == 0:
+                    baseline = R.mean()
+                advantage = R - baseline
+
+                reinforce = advantage * logprobs
+                actor_loss = reinforce.mean()
+
+                self.actor_optim.zero_grad()
+                actor_loss.backward()
+                torch.nn.utils.clip_grad_norm_(self.model.actor.parameters(),
+                                    float(self.max_grad_norm), norm_type=2)
+
+                self.actor_optim.step()
+
+
+                baseline = (baseline * alpha) + ((1. - alpha) * R.mean())
+                baseline = baseline.detach()
+            bests.append(best)
+            best_tours.append(best_tour)
+
+            
+
+            cur_each +=1
+        avg = sum(bests)/len(bests)
+        return avg, best_tours    
     
 # train a TSP20 model using 1 glimpse, tanh clipping with tanh = 10
 #####################################################################
@@ -694,3 +791,41 @@ best_rewards, best_tours = samp.sample(nbr_candidates)
 avg = sum(best_rewards)/len(best_rewards)
 print('average reward : %s' % (avg))
 
+# Test the trained model on the test instances with Active Search strategy
+########################################################################
+
+batch_size = 128
+learning_rate = 1e-5
+nbr_candidates = 12800
+
+# Load another trained model called model.tar
+
+if(USE_CUDA):
+  device = torch.device("cuda")
+else:
+  device = torch.device('cpu')
+
+trained_model = CombinatorialRL(
+    embedding_size,
+    hidden_size,
+    seq_length,
+    n_glimpses, 
+    tanh_exploration,
+    use_tanh,
+    reward,
+    attention=attention,
+    use_cuda=USE_CUDA
+)
+
+checkpoint = torch.load('modelTSP20.tar', map_location=device)
+
+# initiate the Active Search and run it
+act_src = Active_Search(trained_model, val_dataset, checkpoint, batch_size=batch_size, num_workers = 4, learningRate = learning_rate)
+avg, tours = act_src.act_search(k=nbr_candidates)
+
+print('average reward : %s' % (avg))
+
+# save the tours
+tours_file = open('AS_'+ str(seq_length),"wb")
+pickle.dump(tours, tours_file)
+tours_file.close()
