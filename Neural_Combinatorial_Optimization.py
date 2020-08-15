@@ -261,9 +261,7 @@ class PointerNet(nn.Module):
             if self.use_tanh:
                 logits = self.C*torch.tanh(logits)
             else:
-                print(logits)
                 logits = logits/2.0
-                print
 
             logits, mask = self.apply_mask_to_logits(logits, mask, idxs)
             probs = F.softmax(logits, dim=1)
@@ -361,6 +359,75 @@ class CombinatorialRL(nn.Module):
         R = self.reward(actions, self.use_cuda)
         
         return R, action_probs, actions, action_idxs
+
+class CriticNet(nn.Module):
+    def __init__(self, 
+            embedding_size,
+            hidden_size,
+            seq_len,
+            n_glimpses,
+            attention,
+            C=10,
+            use_tanh=False,
+            use_cuda=USE_CUDA,
+            d=128):
+        super(CriticNet, self).__init__()
+        
+        self.embedding_size = embedding_size
+        self.hidden_size    = hidden_size
+        self.n_glimpses     = n_glimpses
+        self.seq_len        = seq_len
+        self.use_cuda       = use_cuda
+        self.use_tanh       = use_tanh
+        self.C              = C
+        
+        
+        self.embedding = GraphEmbedding(2, embedding_size, use_cuda=use_cuda)
+        self.encoder = nn.LSTM(embedding_size, hidden_size, batch_first=True)
+        self.process = nn.LSTM(embedding_size, hidden_size, batch_first=True)
+        self.glimpse = Attention(hidden_size, name=attention, use_cuda=use_cuda)
+        self.decoder1 = nn.Linear(hidden_size, d)
+        self.relu = nn.ReLU()
+        self.decoder2 = nn.Linear(d,1)
+        
+        self.process_start_input = nn.Parameter(torch.FloatTensor(embedding_size))
+        self.process_start_input.data.uniform_(-(1. / math.sqrt(embedding_size)), 1. / math.sqrt(embedding_size))
+            
+    def forward(self, inputs):
+        """
+        Args: 
+            inputs: [batch_size x 2 x seq_len]
+        """
+        batch_size = inputs.size(0)
+        seq_len    = inputs.size(2)
+        assert seq_len == self.seq_len
+        
+        #LSTM encoder
+        embedded = self.embedding(inputs) #embedded : [batch_size, seq_len, embedding_size]
+        encoder_outputs, (hidden, context) = self.encoder(embedded)
+
+        #LSTM process block        
+        process_input = self.process_start_input.unsqueeze(0).repeat(batch_size, 1)
+        for i in range(3):
+            
+            
+            _, (hidden, context) = self.process(process_input.unsqueeze(1), (hidden, context))
+            
+            query = hidden.squeeze(0)
+            for i in range(self.n_glimpses):
+                ref, logits = self.glimpse(query, encoder_outputs)
+                query = torch.bmm(ref, F.softmax(logits, dim=1).unsqueeze(2)).squeeze(2)             
+            
+            process_input = query
+            
+            
+        
+        #decode last hidden into a scalar
+        d_layer = self.decoder1(process_input)
+        d_layer = self.relu(d_layer)
+        baseline_pred = self.decoder2(d_layer)
+        
+        return baseline_pred
 
 class TrainModel:
     def __init__(self, model, train_dataset, val_dataset, batch_size=128, threshold=None, max_grad_norm=2.):
