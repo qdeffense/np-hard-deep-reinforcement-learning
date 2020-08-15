@@ -78,7 +78,7 @@ class Attention(nn.Module):
         """
         Args: 
             query: [batch_size x hidden_size]
-            ref:   ]batch_size x seq_len x hidden_size]
+            ref:   [batch_size x seq_len x hidden_size]
         """
         
         batch_size = ref.size(0)
@@ -90,7 +90,7 @@ class Attention(nn.Module):
             ref   = self.W_ref(ref)  # [batch_size x hidden_size x seq_len] 
             expanded_query = query.repeat(1, 1, seq_len) # [batch_size x hidden_size x seq_len]
             V = self.V.unsqueeze(0).unsqueeze(0).repeat(batch_size, 1, 1) # [batch_size x 1 x hidden_size]
-            logits = torch.bmm(V, F.tanh(expanded_query + ref)).squeeze(1)
+            logits = torch.bmm(V, torch.tanh(expanded_query + ref)).squeeze(1)
             
         elif self.name == 'Dot':
             query  = query.unsqueeze(2)
@@ -132,9 +132,9 @@ class PointerNet(nn.Module):
             hidden_size,
             seq_len,
             n_glimpses,
-            tanh_exploration,
-            use_tanh,
             attention,
+            C=10,
+            use_tanh=False,
             use_cuda=USE_CUDA):
         super(PointerNet, self).__init__()
         
@@ -143,6 +143,8 @@ class PointerNet(nn.Module):
         self.n_glimpses     = n_glimpses
         self.seq_len        = seq_len
         self.use_cuda       = use_cuda
+        self.use_tanh       = use_tanh
+        self.C              = C
         
         
         self.embedding = GraphEmbedding(2, embedding_size, use_cuda=use_cuda)
@@ -167,7 +169,7 @@ class PointerNet(nn.Module):
     def forward(self, inputs):
         """
         Args: 
-            inputs: [batch_size x 1 x sourceL]
+            inputs: [batch_size x 1 x seq_len]
         """
         batch_size = inputs.size(0)
         seq_len    = inputs.size(2)
@@ -179,7 +181,7 @@ class PointerNet(nn.Module):
         
         prev_probs = []
         prev_idxs = []
-        mask = torch.zeros(batch_size, seq_len).byte()
+        mask = torch.zeros(batch_size, seq_len).bool()
         if self.use_cuda:
             mask = mask.cuda()
             
@@ -196,19 +198,19 @@ class PointerNet(nn.Module):
             for i in range(self.n_glimpses):
                 ref, logits = self.glimpse(query, encoder_outputs)
                 logits, mask = self.apply_mask_to_logits(logits, mask, idxs)
-                query = torch.bmm(ref, F.softmax(logits).unsqueeze(2)).squeeze(2) 
+                query = torch.bmm(ref, F.softmax(logits, dim=1).unsqueeze(2)).squeeze(2) 
                 
                 
             _, logits = self.pointer(query, encoder_outputs)
             logits, mask = self.apply_mask_to_logits(logits, mask, idxs)
-            probs = F.softmax(logits)
+            probs = F.softmax(logits, dim=1)
  
             idxs = probs.multinomial().squeeze(1)
             for old_idxs in prev_idxs:
                 if old_idxs.eq(idxs).data.any():
                     print(seq_len)
                     print(' RESAMPLE!')
-                    idxs = probs.multinomial().squeeze(1)
+                    idxs = probs.multinomial(1).squeeze(1)
                     break
             decoder_input = embedded[[i for i in range(batch_size)], idxs.data, :] 
             
@@ -237,10 +239,10 @@ class CombinatorialRL(nn.Module):
                 hidden_size,
                 seq_len,
                 n_glimpses,
-                tanh_exploration,
-                use_tanh,
                 attention,
-                use_cuda)
+                C=tanh_exploration,
+                use_tanh = use_tanh,
+                use_cuda = use_cuda)
 
 
     def forward(self, inputs):
